@@ -1,4 +1,4 @@
-from sqlalchemy import Column, BigInteger, String, DateTime, func, Boolean
+from sqlalchemy import Column, BigInteger, ForeignKey, String, DateTime, func, Boolean
 import sys
 import os
 

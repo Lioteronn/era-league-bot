@@ -99,7 +99,7 @@ class Repository:
             List of all model instances
         """
         with self.session_scope() as session:
-            return session.query(self.model_class).all()
+            return deepcopy(session.query(self.model_class).all())
 
     def update(self, **kwargs) -> Optional[T]:
         """
@@ -115,17 +115,7 @@ class Repository:
             SQLAlchemyError: If the update fails
         """
         # Extract primary key from kwargs based on model class
-        pk_name = None
-        # Common primary key names to try
-        common_pks = ['id', 'team_id', 'user_id', f'{self.model_class.__name__.lower()}_id']
-        
-        # Try to find the primary key in kwargs
-        for key in common_pks:
-            if key in kwargs:
-                pk_name = key
-                pk_value = kwargs[key]
-                # Don't remove from kwargs as it might be needed for the filter
-                break
+        pk_name, pk_value = self._get_common_pk(kwargs)
                 
         if pk_name is None:
             raise ValueError(f"Primary key not found in kwargs: {kwargs}")
@@ -163,3 +153,12 @@ class Repository:
                 
             session.delete(instance)
             return True
+        
+    def _get_common_pk(self, kwargs: dict) -> tuple[str, Any]:
+        common_pks = ['id', 'team_id', 'user_id', f'{self.model_class.__name__.lower()}_id']
+        
+        for key in common_pks:
+            if key in kwargs:
+                return key, kwargs[key]
+
+        raise ValueError(f"Primary key not found in kwargs: {kwargs}")

@@ -3,13 +3,17 @@ from discord.ext import commands
 from cogs.permissions.admin_checker import is_admin
 from database.models.team import Team
 from database.repository.team_repository import TeamRepository
+from database.repository.team_member_repository import TeamMemberRepository
 from images.image_downloader import download_and_save_image
+from database.models.team_member import RoleType
+from typing import Union
 
 
 class TeamCommands(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.team_repository = TeamRepository()
+        self.team_member_repository = TeamMemberRepository()
 
     @commands.slash_command(name="create-team", guild_ids=[1370422733086658631])
     @commands.check(is_admin)
@@ -49,7 +53,7 @@ class TeamCommands(commands.Cog):
     # TODO: Set the user as captain, gotta make all the roblox verification system first and all that
     @commands.slash_command(name="set-captain", guild_ids=[1370422733086658631])
     @commands.check(is_admin)
-    async def set_captain(self, ctx: discord.ApplicationContext, team_name: str, user: discord.Member) -> None:
+    async def set_captain(self, ctx: discord.ApplicationContext, team_name: str, user: str) -> None:
         """
         Set the captain for the team.
 
@@ -62,7 +66,24 @@ class TeamCommands(commands.Cog):
         if not team_obj:
             await ctx.respond(f"Team '{team_name}' not found.")
             return
-        self.team_repository.update(team_id=team_obj.team_id, team_captain_id=user.id)
+        
+        user = await ctx.guild.fetch_member(int(user) if not user.startswith("<@") else int(user[2:-1]))
+        
+        team_member = self.team_member_repository.get_by_user_id(user.id)
+        if not team_member:
+            await ctx.respond(f"User {user.mention} is not a member of any team.")
+            return
+        
+        if team_member.team_id != team_obj.team_id:
+            await ctx.respond(f"User {user.mention} is not a member of team '{team_name}'.")
+            return
+        
+        if team_member.role == RoleType.captain:
+            await ctx.respond(f"User {user.mention} is already the captain of team '{team_name}'.")
+            return
+        
+        self.team_repository.update(team_id=team_obj.team_id, team_captain_id=team_member.user_id)
+        self.team_member_repository.update(team_id=team_obj.team_id, user_id=team_member.user_id, role=RoleType.captain)
         await ctx.respond(f"Captain for team '{team_obj.name}' set to {user.mention}.")
         
     @commands.slash_command(name="search-team", guild_ids=[1370422733086658631])
@@ -112,6 +133,29 @@ class TeamCommands(commands.Cog):
         await ctx.respond(f"Team role '{role.name}' created successfully!")
         return role.id
 
+    @commands.slash_command(name="force-add-player-to-team", guild_ids=[1370422733086658631])
+    @commands.check(is_admin)
+    async def force_add_player_to_team(self, ctx: discord.ApplicationContext, team_name: str, user: discord.Member) -> None:
+        """
+        Force add a player to a team.
+
+        Args:
+            ctx (discord.ApplicationContext): The context of the command.
+            team_name (str): The name of the team.
+            user (discord.Member): The user to add to the team.
+        """
+        team_obj = self.team_repository.get_by_name(team_name)
+        if not team_obj:
+            await ctx.respond(f"Team '{team_name}' not found.")
+            return
+        
+        team_member = self.team_member_repository.get_by_user_id(user.id)
+        if team_member:
+            await ctx.respond(f"User {user.mention} is already a member of team '{team_obj.name}'.")
+            return
+        
+        self.team_member_repository.create(team_id=team_obj.team_id, user_id=user.id, role=RoleType.member, team_display_name=user.display_name)
+        await ctx.respond(f"User {user.mention} added to team '{team_obj.name}'.")
 
 # Add the required setup function
 def setup(bot: commands.Bot):

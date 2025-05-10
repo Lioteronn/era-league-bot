@@ -1,4 +1,4 @@
-from database.repository.session_manager import db_session, Repository
+from database.repository.session_manager import Repository
 from database.models.team import Team
 from typing import Optional
 from copy import deepcopy
