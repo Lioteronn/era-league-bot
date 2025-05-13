@@ -5,6 +5,7 @@ from discord.ext import commands
 # List of cogs to load
 COGS = [
     'team_commands',
+    'verification_commands',
     # Add other cog names here
 ]
 

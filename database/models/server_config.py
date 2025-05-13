@@ -12,6 +12,7 @@ class ServerConfig(Base):
     log_channel_id = Column(BigInteger)
     transaction_channel_id = Column(BigInteger)
     bot_command_channel_id = Column(BigInteger)
+    team_invite_approval_channel_id = Column(BigInteger)
     admin_role_ids = Column(JSON)  # Array or JSON of role IDs
     last_updated = Column(DateTime, server_default=func.now(), onupdate=func.now())
     

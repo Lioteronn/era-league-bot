@@ -147,7 +147,11 @@ class Repository:
             SQLAlchemyError: If the deletion fails
         """
         with self.session_scope() as session:
-            instance = session.query(self.model_class).filter(self.model_class.id == id).first()
+            # check if model uses user_id
+            if hasattr(self.model_class, 'user_id'):
+                instance = session.query(self.model_class).filter(self.model_class.user_id == id).first()
+            else:
+                instance = session.query(self.model_class).filter(self.model_class.id == id).first()
             if not instance:
                 return False
                 

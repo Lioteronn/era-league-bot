@@ -19,6 +19,7 @@ class TeamMember(Base):
     role = Column(Enum(RoleType), nullable=False, default=RoleType.member)
     team_display_name = Column(String(100), nullable=False)  # in-game name
     joined_at = Column(DateTime, server_default=func.now())
+    rating = Column(Integer, nullable=True)  # Player rating out of 5 (can be null for regular players)
     
     def __repr__(self):
         return f"<TeamMember(team_id={self.team_id}, user_id={self.user_id}, role={self.role})>"

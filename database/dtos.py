@@ -28,6 +28,7 @@ class TeamMemberDTO(BaseDTO):
     role: str
     team_display_name: str
     joined_at: str
+    rating: int = None
 
 
 @dataclass(init=False)
@@ -38,6 +39,8 @@ class UserDTO(BaseDTO):
     joined_at: str
     is_roblox_verified: bool
     roblox_username: str
+    rating: int = None
+    position: str = None
 
 
 @dataclass(init=False)
