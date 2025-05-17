@@ -1,0 +1,721 @@
+import discord
+from discord.ext import commands, tasks
+from discord import app_commands
+from typing import List, Optional
+import sys
+import os
+import asyncio
+from datetime import datetime, timedelta
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from database.repository.scrim_repository import ScrimRepository
+from database.repository.team_repository import TeamRepository
+
+# UI Components for Scrims
+
+class ScrimTypeView(discord.ui.View):
+    """View with buttons to select scrim type (Now or Scheduled)"""
+    def __init__(self, author_id: int):
+        super().__init__(timeout=300)
+        self.author_id = author_id
+        self.value = None
+    
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        # Only allow the original author to use these buttons
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message("You cannot use these buttons.", ephemeral=True)
+            return False
+        return True
+    
+    @discord.ui.button(label="Now", style=discord.ButtonStyle.primary)
+    async def now_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.value = "now"
+        # Present the modal for immediate scrims
+        modal = ScrimNowModal()
+        await interaction.response.send_modal(modal)
+        self.stop()
+    
+    @discord.ui.button(label="Scheduled", style=discord.ButtonStyle.secondary)
+    async def scheduled_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.value = "scheduled"
+        # Present the modal for scheduled scrims
+        modal = ScrimScheduledModal()
+        await interaction.response.send_modal(modal)
+        self.stop()
+
+
+class ScrimNowModal(discord.ui.Modal, title="Immediate Scrim Details"):
+    """Modal for creating an immediate scrim"""
+    server_code = discord.ui.TextInput(
+        label="Private Server Code",
+        placeholder="Enter your private server code here",
+        required=True,
+        max_length=50
+    )
+    
+    notes = discord.ui.TextInput(
+        label="Additional Notes",
+        placeholder="Any additional requirements or notes",
+        required=False,
+        style=discord.TextStyle.paragraph,
+        max_length=500
+    )
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        # Store the values for later use
+        self.interaction = interaction
+        await interaction.response.defer(ephemeral=True)
+
+
+class ScrimScheduledModal(discord.ui.Modal, title="Scheduled Scrim Details"):
+    """Modal for creating a scheduled scrim"""
+    scheduled_time = discord.ui.TextInput(
+        label="Scheduled Time",
+        placeholder="e.g., 'Tomorrow at 8PM EST' or '2023-05-15 20:00 UTC'",
+        required=True,
+        max_length=100
+    )
+    
+    server_code = discord.ui.TextInput(
+        label="Private Server Code (Optional)",
+        placeholder="Enter your private server code here if available",
+        required=False,
+        max_length=50
+    )
+    
+    notes = discord.ui.TextInput(
+        label="Additional Notes",
+        placeholder="Any additional requirements or notes",
+        required=False,
+        style=discord.TextStyle.paragraph,
+        max_length=500
+    )
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        # Store the values for later use
+        self.interaction = interaction
+        await interaction.response.defer(ephemeral=True)
+
+
+class ScrimAdView(discord.ui.View):
+    """View with button to join a scrim queue"""
+    def __init__(self, scrim_id: int):
+        super().__init__(timeout=None)  # Persistent view
+        self.scrim_id = scrim_id
+        self.add_item(JoinQueueButton(scrim_id))
+
+
+class JoinQueueButton(discord.ui.Button):
+    """Button to join a scrim queue"""
+    def __init__(self, scrim_id: int):
+        super().__init__(
+            style=discord.ButtonStyle.success,
+            label="Join Queue",
+            custom_id=f"join_queue:{scrim_id}"
+        )
+        self.scrim_id = scrim_id
+    
+    async def callback(self, interaction: discord.Interaction):
+        # Get the scrim from the database
+        scrim_repo = ScrimRepository()
+        scrim = scrim_repo.get_scrim_by_id(self.scrim_id)
+        
+        if not scrim:
+            await interaction.response.send_message("This scrim no longer exists.", ephemeral=True)
+            return
+        
+        if scrim.status != "open":
+            await interaction.response.send_message("This scrim is no longer open for joining.", ephemeral=True)
+            return
+        
+        # Check if the user is the creator
+        if interaction.user.id == scrim.creator_id:
+            await interaction.response.send_message("You cannot join your own scrim queue.", ephemeral=True)
+            return
+        
+        # Match the user with the scrim
+        # Get the user's team (if applicable)
+        team_repo = TeamRepository()
+        user_team = team_repo.get_team_by_captain_id(interaction.user.id)
+        user_team_id = user_team.team_id if user_team else None
+        
+        # Update the scrim with the opponent's info
+        updated_scrim = scrim_repo.match_scrims(
+            scrim_id=self.scrim_id,
+            opponent_id=interaction.user.id,
+            opponent_team_id=user_team_id
+        )
+        
+        if updated_scrim:
+            # Notify the scrim creator
+            creator = interaction.guild.get_member(updated_scrim.creator_id)
+            if creator:
+                try:
+                    # Create match embed
+                    match_embed = discord.Embed(
+                        title="Scrim Match Found!",
+                        description=f"Your scrim has been matched with {interaction.user.mention}!",
+                        color=discord.Color.green()
+                    )
+                    
+                    match_embed.add_field(
+                        name="Scrim Type",
+                        value=updated_scrim.scrim_type.capitalize()
+                    )
+                    
+                    if updated_scrim.scheduled_time:
+                        match_embed.add_field(
+                            name="Scheduled Time",
+                            value=updated_scrim.scheduled_time
+                        )
+                    
+                    if updated_scrim.server_code:
+                        match_embed.add_field(
+                            name="Server Code",
+                            value=f"```{updated_scrim.server_code}```"
+                        )
+                    
+                    if updated_scrim.notes:
+                        match_embed.add_field(
+                            name="Notes",
+                            value=updated_scrim.notes,
+                            inline=False
+                        )
+                    
+                    # Send DM to the creator
+                    await creator.send(embed=match_embed)
+                except discord.Forbidden:
+                    # Unable to DM the creator, notify in the channel
+                    pass
+            
+            # Notify the opponent (the user who joined)
+            match_embed = discord.Embed(
+                title="You Joined a Scrim!",
+                description=f"You have been matched for a scrim!",
+                color=discord.Color.green()
+            )
+            
+            match_embed.add_field(
+                name="Scrim Type",
+                value=updated_scrim.scrim_type.capitalize()
+            )
+            
+            if updated_scrim.scheduled_time:
+                match_embed.add_field(
+                    name="Scheduled Time",
+                    value=updated_scrim.scheduled_time
+                )
+            
+            if updated_scrim.server_code:
+                match_embed.add_field(
+                    name="Server Code",
+                    value=f"```{updated_scrim.server_code}```"
+                )
+            
+            if updated_scrim.notes:
+                match_embed.add_field(
+                    name="Notes",
+                    value=updated_scrim.notes,
+                    inline=False
+                )
+            
+            await interaction.response.send_message(embed=match_embed, ephemeral=True)
+            
+            # Update the original scrim message
+            channel = interaction.guild.get_channel(updated_scrim.channel_id)
+            if channel:
+                try:
+                    message = await channel.fetch_message(updated_scrim.message_id)
+                    updated_embed = message.embeds[0]
+                    updated_embed.title = "✅ Scrim Matched"
+                    updated_embed.color = discord.Color.green()
+                    
+                    # Update or add the Status field
+                    status_found = False
+                    for i, field in enumerate(updated_embed.fields):
+                        if field.name == "Status":
+                            updated_embed.set_field_at(
+                                index=i,
+                                name="Status",
+                                value="Matched with " + interaction.user.mention,
+                                inline=True
+                            )
+                            status_found = True
+                            break
+                    
+                    if not status_found:
+                        updated_embed.add_field(
+                            name="Status",
+                            value="Matched with " + interaction.user.mention,
+                            inline=True
+                        )
+                    
+                    # Update the message
+                    await message.edit(embed=updated_embed, view=None)
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                    pass
+        else:
+            await interaction.response.send_message("Failed to join the scrim queue. It may no longer be available.", ephemeral=True)
+
+
+class ScrimMenuView(discord.ui.View):
+    """Main menu view for scrim options"""
+    def __init__(self, author_id: int):
+        super().__init__(timeout=300)
+        self.author_id = author_id
+    
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message("You cannot use these buttons.", ephemeral=True)
+            return False
+        return True
+    
+    @discord.ui.button(label="Post Scrim Ad", style=discord.ButtonStyle.primary)
+    async def post_ad_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Show the scrim type selection view
+        view = ScrimTypeView(interaction.user.id)
+        await interaction.response.send_message(
+            "Select the type of scrim you want to create:",
+            view=view,
+            ephemeral=True
+        )
+    
+    @discord.ui.button(label="View Queue", style=discord.ButtonStyle.secondary)
+    async def view_queue_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Get all open scrims
+        scrim_repo = ScrimRepository()
+        open_scrims = scrim_repo.get_open_scrims()
+        
+        if not open_scrims:
+            await interaction.response.send_message(
+                "There are no open scrims at the moment.",
+                ephemeral=True
+            )
+            return
+        
+        # Create an embed showing the open scrims
+        embed = discord.Embed(
+            title="Open Scrim Queue",
+            description="Here are all the open scrims looking for opponents:",
+            color=discord.Color.blue()
+        )
+        
+        for scrim in open_scrims:
+            # Get the author name
+            author_name = "Unknown"
+            member = interaction.guild.get_member(scrim.creator_id)
+            if member:
+                author_name = member.display_name
+            
+            # Create field for this scrim
+            field_value = f"Type: {scrim.scrim_type.capitalize()}\n"
+            if scrim.scheduled_time:
+                field_value += f"Time: {scrim.scheduled_time}\n"
+            
+            # Add a mention to the scrim message
+            if scrim.message_id and scrim.channel_id:
+                channel = interaction.guild.get_channel(scrim.channel_id)
+                if channel:
+                    field_value += f"[View Scrim Ad](https://discord.com/channels/{interaction.guild.id}/{scrim.channel_id}/{scrim.message_id})"
+            
+            embed.add_field(
+                name=f"Scrim by {author_name} (ID: {scrim.scrim_id})",
+                value=field_value,
+                inline=False
+            )
+        
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+    
+    @discord.ui.button(label="Leave Queue", style=discord.ButtonStyle.danger)
+    async def leave_queue_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Get the user's scrims
+        scrim_repo = ScrimRepository()
+        user_scrims = scrim_repo.get_user_scrims(interaction.user.id)
+        
+        # Filter to only show scrims where the user is the opponent (joined the queue)
+        joined_scrims = [s for s in user_scrims if s.opponent_id == interaction.user.id and s.status == "matched"]
+        
+        if not joined_scrims:
+            await interaction.response.send_message(
+                "You haven't joined any scrim queues.",
+                ephemeral=True
+            )
+            return
+        
+        # Leave all joined queues
+        left_count = scrim_repo.leave_queue(interaction.user.id)
+        
+        await interaction.response.send_message(
+            f"You've left {left_count} scrim queues.",
+            ephemeral=True
+        )
+
+
+class ScrimCommands(commands.Cog):
+    """Commands for managing scrims and scrim queues"""
+    def __init__(self, bot):
+        self.bot = bot
+        self.scrim_repo = ScrimRepository()
+        self.team_repo = TeamRepository()
+        self.scrim_cleanup.start()
+    
+    def cog_unload(self):
+        self.scrim_cleanup.cancel()
+    
+    @tasks.loop(hours=12)
+    async def scrim_cleanup(self):
+        """Periodically cleanup old scrim entries"""
+        # This would be implemented to automatically expire old scrim posts
+        # For now we'll leave it as a placeholder
+        pass
+    
+    @scrim_cleanup.before_loop
+    async def before_scrim_cleanup(self):
+        await self.bot.wait_until_ready()
+    
+    @app_commands.command(name="scrim", description="Manage scrims and scrim queues")
+    async def scrim(self, interaction: discord.Interaction):
+        """Main command to interact with the scrim system"""
+        # Show the main scrim menu
+        view = ScrimMenuView(interaction.user.id)
+        embed = discord.Embed(
+            title="Scrim Queue System",
+            description="Select an option to manage scrims:",
+            color=discord.Color.blue()
+        )
+        
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+    
+    # Handle the scrim ad creation after modal submission
+    async def create_scrim_ad(self, interaction, scrim_type, data):
+        # Extract data from the modal
+        if scrim_type == "now":
+            server_code = data.server_code.value
+            scheduled_time = None
+        else:  # scheduled
+            server_code = data.server_code.value if data.server_code.value else None
+            scheduled_time = data.scheduled_time.value
+        
+        notes = data.notes.value if hasattr(data, "notes") and data.notes.value else None
+        
+        # Get the user's team (if applicable)
+        user_team = self.team_repo.get_team_by_captain_id(interaction.user.id)
+        user_team_id = user_team.team_id if user_team else None
+        
+        # Create the scrim in the database
+        scrim = self.scrim_repo.create_scrim(
+            creator_id=interaction.user.id,
+            scrim_type=scrim_type,
+            server_code=server_code,
+            scheduled_time=scheduled_time,
+            creator_team_id=user_team_id,
+            notes=notes
+        )
+        
+        # Create an embed for the scrim ad
+        embed = discord.Embed(
+            title=f"🔄 Open Scrim ({scrim_type.capitalize()})",
+            description=f"A new scrim has been posted by {interaction.user.mention}!",
+            color=discord.Color.blue(),
+            timestamp=datetime.now()
+        )
+        
+        if user_team:
+            embed.add_field(name="Team", value=user_team.name, inline=True)
+        
+        if scrim_type == "now":
+            embed.add_field(name="Type", value="Ready to play now", inline=True)
+        else:
+            embed.add_field(name="Type", value="Scheduled", inline=True)
+            embed.add_field(name="Scheduled Time", value=scheduled_time, inline=True)
+        
+        embed.add_field(name="Status", value="Looking for opponent", inline=True)
+        
+        if notes:
+            embed.add_field(name="Notes", value=notes, inline=False)
+        
+        embed.set_footer(text=f"Scrim ID: {scrim.scrim_id}")
+        
+        # Create a view with the Join Queue button
+        view = ScrimAdView(scrim.scrim_id)
+        
+        # Send the embed to the scrim ads channel
+        # For now, use the current channel. In a real implementation,
+        # you would configure a dedicated channel in server settings
+        scrim_channel = interaction.channel
+        
+        # Send the message
+        scrim_message = await scrim_channel.send(embed=embed, view=view)
+        
+        # Update the scrim record with the message ID and channel ID
+        self.scrim_repo.update_scrim_message(
+            scrim_id=scrim.scrim_id,
+            message_id=scrim_message.id,
+            channel_id=scrim_channel.id
+        )
+        
+        # Send a confirmation to the user
+        confirmation_embed = discord.Embed(
+            title="Scrim Ad Posted!",
+            description="Your scrim ad has been posted. You'll be notified when someone joins your queue.",
+            color=discord.Color.green()
+        )
+        
+        await interaction.followup.send(embed=confirmation_embed, ephemeral=True)
+    
+    @commands.Cog.listener()
+    async def on_interaction(self, interaction: discord.Interaction):
+        """Handle interactions for custom UI components"""
+        # Check if it's a modal submit
+        if interaction.type == discord.InteractionType.modal_submit:
+            custom_id = interaction.data.get("custom_id")
+            
+            # Handle ScrimNowModal
+            if custom_id == "Immediate Scrim Details":
+                modal_data = interaction.data.get("components", [])
+                server_code = ""
+                notes = ""
+                
+                # Extract values from modal components
+                for action_row in modal_data:
+                    components = action_row.get("components", [])
+                    for component in components:
+                        if component.get("custom_id") == "server_code":
+                            server_code = component.get("value", "")
+                        elif component.get("custom_id") == "notes":
+                            notes = component.get("value", "")
+                
+                # Create a simple object to mimic the modal's structure
+                class ModalData:
+                    pass
+                
+                data = ModalData()
+                data.server_code = ModalData()
+                data.server_code.value = server_code
+                data.notes = ModalData()
+                data.notes.value = notes
+                
+                await self.create_scrim_ad(interaction, "now", data)
+            
+            # Handle ScrimScheduledModal
+            elif custom_id == "Scheduled Scrim Details":
+                modal_data = interaction.data.get("components", [])
+                scheduled_time = ""
+                server_code = ""
+                notes = ""
+                
+                # Extract values from modal components
+                for action_row in modal_data:
+                    components = action_row.get("components", [])
+                    for component in components:
+                        if component.get("custom_id") == "scheduled_time":
+                            scheduled_time = component.get("value", "")
+                        elif component.get("custom_id") == "server_code":
+                            server_code = component.get("value", "")
+                        elif component.get("custom_id") == "notes":
+                            notes = component.get("value", "")
+                
+                # Create a simple object to mimic the modal's structure
+                class ModalData:
+                    pass
+                
+                data = ModalData()
+                data.scheduled_time = ModalData()
+                data.scheduled_time.value = scheduled_time
+                data.server_code = ModalData()
+                data.server_code.value = server_code
+                data.notes = ModalData()
+                data.notes.value = notes
+                
+                await self.create_scrim_ad(interaction, "scheduled", data)
+        
+        # Check if it's a component interaction for the join queue button
+        elif interaction.type == discord.InteractionType.component:
+            custom_id = interaction.data.get("custom_id", "")
+            
+            if custom_id.startswith("join_queue:"):
+                # The button callback should handle this, but as a fallback
+                try:
+                    scrim_id = int(custom_id.split(":")[1])
+                    
+                    # Get the scrim
+                    scrim = self.scrim_repo.get_scrim_by_id(scrim_id)
+                    if scrim and scrim.status == "open":
+                        # Get the user's team (if applicable)
+                        user_team = self.team_repo.get_team_by_captain_id(interaction.user.id)
+                        user_team_id = user_team.team_id if user_team else None
+                        
+                        # Match the scrim
+                        self.scrim_repo.match_scrims(
+                            scrim_id=scrim_id,
+                            opponent_id=interaction.user.id,
+                            opponent_team_id=user_team_id
+                        )
+                        
+                        await interaction.response.send_message(
+                            "You've joined the scrim queue! The scrim creator will be notified.",
+                            ephemeral=True
+                        )
+                    else:
+                        await interaction.response.send_message(
+                            "This scrim is no longer available.",
+                            ephemeral=True
+                        )
+                except Exception as e:
+                    await interaction.response.send_message(
+                        f"There was an error processing your request: {str(e)}",
+                        ephemeral=True
+                    )
+
+
+async def setup(bot):
+    await bot.add_cog(ScrimCommands(bot))
+
+
+async def setup(bot):
+    await bot.add_cog(ScrimCommands(bot))
+
+        # you would configure a dedicated channel in server settings
+        scrim_channel = interaction.channel
+        
+        # Send the message
+        scrim_message = await scrim_channel.send(embed=embed, view=view)
+        
+        # Update the scrim record with the message ID and channel ID
+        self.scrim_repo.update_scrim_message(
+            scrim_id=scrim.scrim_id,
+            message_id=scrim_message.id,
+            channel_id=scrim_channel.id
+        )
+        
+        # Send a confirmation to the user
+        confirmation_embed = discord.Embed(
+            title="Scrim Ad Posted!",
+            description="Your scrim ad has been posted. You'll be notified when someone joins your queue.",
+            color=discord.Color.green()
+        )
+        
+        await interaction.followup.send(embed=confirmation_embed, ephemeral=True)
+    
+    @commands.Cog.listener()
+    async def on_interaction(self, interaction: discord.Interaction):
+        """Handle interactions for custom UI components"""
+        # Check if it's a modal submit
+        if interaction.type == discord.InteractionType.modal_submit:
+            custom_id = interaction.data.get("custom_id")
+            
+            # Handle ScrimNowModal
+            if custom_id == "Immediate Scrim Details":
+                modal_data = interaction.data.get("components", [])
+                server_code = ""
+                notes = ""
+                
+                # Extract values from modal components
+                for action_row in modal_data:
+                    components = action_row.get("components", [])
+                    for component in components:
+                        if component.get("custom_id") == "server_code":
+                            server_code = component.get("value", "")
+                        elif component.get("custom_id") == "notes":
+                            notes = component.get("value", "")
+                
+                # Create a simple object to mimic the modal's structure
+                class ModalData:
+                    pass
+                
+                data = ModalData()
+                data.server_code = ModalData()
+                data.server_code.value = server_code
+                data.notes = ModalData()
+                data.notes.value = notes
+                
+                await self.create_scrim_ad(interaction, "now", data)
+            
+            # Handle ScrimScheduledModal
+            elif custom_id == "Scheduled Scrim Details":
+                modal_data = interaction.data.get("components", [])
+                scheduled_time = ""
+                server_code = ""
+                notes = ""
+                
+                # Extract values from modal components
+                for action_row in modal_data:
+                    components = action_row.get("components", [])
+                    for component in components:
+                        if component.get("custom_id") == "scheduled_time":
+                            scheduled_time = component.get("value", "")
+                        elif component.get("custom_id") == "server_code":
+                            server_code = component.get("value", "")
+                        elif component.get("custom_id") == "notes":
+                            notes = component.get("value", "")
+                
+                # Create a simple object to mimic the modal's structure
+                class ModalData:
+                    pass
+                
+                data = ModalData()
+                data.scheduled_time = ModalData()
+                data.scheduled_time.value = scheduled_time
+                data.server_code = ModalData()
+                data.server_code.value = server_code
+                data.notes = ModalData()
+                data.notes.value = notes
+                
+                await self.create_scrim_ad(interaction, "scheduled", data)
+        
+        # Check if it's a component interaction for the join queue button
+        elif interaction.type == discord.InteractionType.component:
+            custom_id = interaction.data.get("custom_id", "")
+            
+            if custom_id.startswith("join_queue:"):
+                # The button callback should handle this, but as a fallback
+                try:
+                    scrim_id = int(custom_id.split(":")[1])
+                    
+                    # Get the scrim
+                    scrim = self.scrim_repo.get_scrim_by_id(scrim_id)
+                    if scrim and scrim.status == "open":
+                        # Get the user's team (if applicable)
+                        user_team = self.team_repo.get_team_by_captain_id(interaction.user.id)
+                        user_team_id = user_team.team_id if user_team else None
+                        
+                        # Match the scrim
+                        self.scrim_repo.match_scrims(
+                            scrim_id=scrim_id,
+                            opponent_id=interaction.user.id,
+                            opponent_team_id=user_team_id
+                        )
+                        
+                        await interaction.response.send_message(
+                            "You've joined the scrim queue! The scrim creator will be notified.",
+                            ephemeral=True
+                        )
+                    else:
+                        await interaction.response.send_message(
+                            "This scrim is no longer available.",
+                            ephemeral=True
+                        )
+                except Exception as e:
+                    await interaction.response.send_message(
+                        f"There was an error processing your request: {str(e)}",
+                        ephemeral=True
+                    )
+
+
+async def setup(bot):
+    await bot.add_cog(ScrimCommands(bot))
+
+                    )
+
+
+async def setup(bot):
+    await bot.add_cog(ScrimCommands(bot))
+
+
+                    )
+
+
+def setup(bot):
+    bot.add_cog(ScrimCommands(bot))
+
+    bot.add_cog(ScrimCommands(bot))

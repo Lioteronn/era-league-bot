@@ -6,5 +6,7 @@ from .transaction import Transaction
 from .invitation import Invitation
 from .server_config import ServerConfig
 from .guild import Guild
+from .scrim_config import ScrimConfig
+from .scrim import Scrim
 
-__all__ = ['Team', 'User', 'TeamMember', 'Transaction', 'Invitation', 'ServerConfig', 'Guild']
+__all__ = ['Team', 'User', 'TeamMember', 'Transaction', 'Invitation', 'ServerConfig', 'Guild', 'ScrimConfig', 'Scrim']

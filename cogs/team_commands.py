@@ -38,7 +38,7 @@ class TeamCommands(commands.Cog):
         # Maximum number of pending invitations allowed per captain/vice-captain
         self.max_pending_invites = 3
 
-    @commands.slash_command(name="create-team", guild_ids=[1370422733086658631])
+    @commands.slash_command(name="create-team")
     @commands.check(is_admin)
     @require_verification()
     async def create_team(self, ctx: discord.ApplicationContext, team_name: str, hexcode: str, logo_url: str = None) -> None:
@@ -82,7 +82,7 @@ class TeamCommands(commands.Cog):
         await ctx.respond(f"Team '{team_name}' created successfully!")
 
     # TODO: Set the user as captain, gotta make all the roblox verification system first and all that
-    @commands.slash_command(name="set-captain", guild_ids=[1370422733086658631])
+    @commands.slash_command(name="set-captain")
     @commands.check(is_admin)
     @require_verification("user")
     async def set_captain(self, ctx: discord.ApplicationContext, team_name: str, user: str) -> None:
@@ -96,7 +96,7 @@ class TeamCommands(commands.Cog):
         """
         await self._set_captainship(ctx, team_name, user, RoleType.captain)
     
-    @commands.slash_command(name="set-vicecaptain", guild_ids=[1370422733086658631])
+    @commands.slash_command(name="set-vicecaptain")
     @commands.check(is_admin)
     @require_verification("user")
     async def set_vicecaptain(self, ctx: discord.ApplicationContext, team_name: str, user: str) -> None:
@@ -108,9 +108,9 @@ class TeamCommands(commands.Cog):
             team_name (str): The name of the team.
             user (str): The user to set as the vicecaptain.
         """
-        await self._set_captainship(ctx, team_name, user, RoleType.vice_captain)
+        await self._set_captainship(ctx, team_name, user, RoleType.vice_captain, vice_captain=True)
 
-    async def _set_captainship(self, ctx: discord.ApplicationContext, team_name: str, user: str, role: RoleType) -> None:
+    async def _set_captainship(self, ctx: discord.ApplicationContext, team_name: str, user: str, role: RoleType, vice_captain: bool = False) -> None:
         """
         Set the captain for the team.
 
@@ -140,13 +140,16 @@ class TeamCommands(commands.Cog):
             return
         
         # Update the team's captain_id field
-        self.team_repository.update(team_id=team_obj.team_id, team_captain_id=team_member.user_id)
+        if not vice_captain:
+            self.team_repository.update(team_id=team_obj.team_id, team_captain_id=team_member.user_id)
+        else:
+            self.team_repository.update(team_id=team_obj.team_id)
         
         # Use the specialized update_role method to avoid primary key constraint issues
         self.team_member_repository.update_role(team_id=team_obj.team_id, user_id=team_member.user_id, role=role)
         await ctx.respond(f"{role.name.title()} for team '{team_obj.name}' set to {user.mention}.")
         
-    @commands.slash_command(name="search-team", guild_ids=[1370422733086658631])
+    @commands.slash_command(name="search-team")
     @require_verification()
     async def search_team(self, ctx: discord.ApplicationContext, team_name: str) -> None:
         """
@@ -170,6 +173,13 @@ class TeamCommands(commands.Cog):
             
         logo_url = "attachment://logo.png" if file else "attachment://nologo.png"
 
+        extra_info = f"""
+        Team role: <@&{team_role.id}>
+        Team color: {team_obj.hexcode}
+        Team captain: <@{team_obj.team_captain_id if team_obj.team_captain_id else "None"}>
+        Total members: {len(self.team_member_repository.get_by_team_id(team_obj.team_id))}
+        """
+
         embed = discord.Embed(
             title=team_title,
             description=f"",
@@ -177,10 +187,10 @@ class TeamCommands(commands.Cog):
         )
         embed.set_thumbnail(url=logo_url)
         embed.add_field(name="🔹 Current Roster", value=self._fetch_team_players(team_obj.team_id), inline=True)
-        embed.add_field(name="🔹 Team Role", value=f"<@&{team_role.id}>", inline=True)
+        embed.add_field(name="🔹 Extra info", value=extra_info, inline=True)
         await ctx.respond(embed=embed, files=[file])
 
-    @commands.slash_command(name="force-add-player-to-team", guild_ids=[1370422733086658631])
+    @commands.slash_command(name="force-add-player-to-team")
     @commands.check(is_admin)
     @require_verification("user")
     async def force_add_player_to_team(self, ctx: discord.ApplicationContext, team_name: str, user: discord.Member) -> None:
@@ -205,8 +215,34 @@ class TeamCommands(commands.Cog):
         self.team_member_repository.create(team_id=team_obj.team_id, user_id=user.id, role=RoleType.member, team_display_name=user.display_name)
         await user.add_roles(ctx.guild.get_role(team_obj.team_role_id))
         await ctx.respond(f"User {user.mention} added to team '{team_obj.name}'.")
+        
+    @commands.slash_command(name="force-kick-player-from-team")
+    @commands.check(is_admin)
+    @require_verification("user")
+    async def force_kick_player_from_team(self, ctx: discord.ApplicationContext, team_name: str, user: discord.Member) -> None:
+        """
+        Force kick a player from a team.
 
-    @commands.slash_command(name="set-player-rating", guild_ids=[1370422733086658631])
+        Args:
+            ctx (discord.ApplicationContext): The context of the command.
+            team_name (str): The name of the team.
+            user (discord.Member): The user to kick from the team.
+        """
+        team_obj = self.team_repository.get_by_name(team_name)
+        if not team_obj:
+            await ctx.respond(f"Team '{team_name}' not found.")
+            return
+        
+        team_member = self.team_member_repository.get_by_user_id(user.id)
+        if not team_member:
+            await ctx.respond(f"User {user.mention} is not a member of team '{team_obj.name}'.")
+            return
+        
+        self.team_member_repository.delete(user.id)
+        await user.remove_roles(ctx.guild.get_role(team_obj.team_role_id))
+        await ctx.respond(f"User {user.mention} kicked from team '{team_obj.name}'.")
+
+    @commands.slash_command(name="set-player-rating")
     @commands.check(is_admin)
     async def set_player_rating(self, ctx: discord.ApplicationContext, user: discord.Member, rating: float) -> None:
         """
@@ -233,7 +269,7 @@ class TeamCommands(commands.Cog):
         star_display = self._format_rating_stars(updated_user.rating)
         await ctx.respond(f"Set {user.mention}'s rating to {star_display} ({rating}/5)")
         
-    @commands.slash_command(name="set-player-position", guild_ids=[1370422733086658631])
+    @commands.slash_command(name="set-player-position")
     @commands.check(is_admin)
     async def set_player_position(self, ctx: discord.ApplicationContext, user: discord.Member, 
                                   position: Option(str, "Player position", 
@@ -260,7 +296,7 @@ class TeamCommands(commands.Cog):
         
         await ctx.respond(f"Set {user.mention}'s position to {position}")
         
-    @commands.slash_command(name="top-players", guild_ids=[1370422733086658631])
+    @commands.slash_command(name="top-players")
     async def top_players(self, ctx: discord.ApplicationContext, 
                          position: Option(str, "Position to filter by", 
                                        choices=[p.value for p in PositionType]), 
@@ -308,7 +344,7 @@ class TeamCommands(commands.Cog):
             
         await ctx.respond(embed=embed)
         
-    @commands.slash_command(name="list-teams", guild_ids=[1370422733086658631])
+    @commands.slash_command(name="list-teams")
     @require_verification()
     async def list_teams(self, ctx: discord.ApplicationContext,
                         limit: Option(int, "Maximum number of teams to display", min_value=1, max_value=50, default=25)) -> None:
@@ -327,33 +363,57 @@ class TeamCommands(commands.Cog):
             return
         
         # Build the embed for display
+        # Set color based on first team's hexcode if available
+        embed_color = discord.Color.blue()  # Default color
+        if teams[0].hexcode and teams[0].hexcode.startswith('#'):
+            try:
+                # Convert hex color to RGB values for discord.Color
+                hex_color = teams[0].hexcode.lstrip('#')
+                rgb_tuple = tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
+                embed_color = discord.Color.from_rgb(*rgb_tuple)
+            except Exception:
+                # If conversion fails, use default color
+                pass
+                
         embed = discord.Embed(
             title="Teams List",
-            description=f"Showing {len(teams)} teams",
-            color=discord.Color.blue(),
+            description=f"Displaying {len(teams)} team{'s' if len(teams) != 1 else ''}",
+            color=embed_color,
             timestamp=datetime.datetime.now()
         )
         
-        # Add team entries to the embed
+        # Import the RoleType at the top level
+        from database.models.team_member import RoleType
+        
+        teams_list = ""
+        captains_list = ""
+        vices_list = ""
+        
+        # Add team entries to the lists
         for team in teams:
-            # Get all members of this team
-            team_members = self.team_member_repository.get_by_team_id(team.team_id)
-            total_players = len(team_members) if team_members else 0
-            
-            # Count star rated players (players with rating > 0)
-            star_rated_players = sum(1 for member in team_members if member.rating is not None and member.rating > 0) if team_members else 0
-            
             # Get team role mention
             role_mention = f"<@&{team.team_role_id}>" if team.team_role_id else "No role assigned"
+            teams_list += f"{role_mention}\n"
             
-            # Format team information
-            value = f"**Total Players:** {total_players}\n**Team Role:** {role_mention}\n**Star Rated Players:** {star_rated_players}"
+            # Get all members of this team
+            team_members = self.team_member_repository.get_by_team_id(team.team_id)
             
-            embed.add_field(
-                name=team.name,
-                value=value,
-                inline=True
-            )
+            # Find captain and vice captain
+            captain = next((member for member in team_members if member.role == RoleType.captain), None) if team_members else None
+            vice_captain = next((member for member in team_members if member.role == RoleType.vice_captain), None) if team_members else None
+            
+            # Format captain information
+            captain_info = f"<@{captain.user_id}>" if captain else "*None*"
+            captains_list += f"{captain_info}\n"
+            
+            # Format vice captain information
+            vice_info = f"<@{vice_captain.user_id}>" if vice_captain else "*None*"
+            vices_list += f"{vice_info}\n"
+        
+        # Add fields to the embed
+        embed.add_field(name="📋 Teams", value=teams_list or "*No teams*", inline=True)
+        embed.add_field(name="👑 Captain", value=captains_list or "*No captains*", inline=True)
+        embed.add_field(name="🎖️ Vice Captain", value=vices_list or "*No vice captains*", inline=True)
         
         await ctx.respond(embed=embed)
     
@@ -396,7 +456,7 @@ class TeamCommands(commands.Cog):
         await ctx.respond(f"Team role '{role.name}' created successfully!")
         return role.id
 
-    @commands.slash_command(name="register-approval-channel", guild_ids=[1370422733086658631])
+    @commands.slash_command(name="register-approval-channel")
     @commands.check(is_admin)
     @require_verification()
     async def register_approval_channel(self, ctx: discord.ApplicationContext, channel: discord.TextChannel) -> None:
@@ -446,7 +506,7 @@ class TeamCommands(commands.Cog):
             
         return team_obj, team_member
     
-    @commands.slash_command(name="kick-player", guild_ids=[1370422733086658631])
+    @commands.slash_command(name="kick-player")
     @require_verification("user")
     async def kick_player(self, ctx: discord.ApplicationContext, 
                          discord_username: Optional[str] = None, 
@@ -561,7 +621,7 @@ class TeamCommands(commands.Cog):
             except:
                 await ctx.respond(f"User with Roblox username '{roblox_username}' has been kicked from team '{team_obj.name}'.")
 
-    @commands.slash_command(name="invite-player", guild_ids=[1370422733086658631])
+    @commands.slash_command(name="invite-player")
     @require_verification("user")
     async def invite_player(self, ctx: discord.ApplicationContext, team_name: str, user: discord.Member) -> None:
         """

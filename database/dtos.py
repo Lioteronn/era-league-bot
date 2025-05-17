@@ -82,3 +82,35 @@ class ServerConfigDTO(BaseDTO):
     guild_id: int
     settings: dict
     updated_at: str
+
+
+@dataclass(init=False)
+class ScrimDTO(BaseDTO):
+    scrim_id: int = None
+    creator_id: int = None
+    creator_team_id: int = None
+    scrim_type: str = None
+    server_code: str = None
+    scheduled_time: str = None
+    status: str = 'open'
+    message_id: int = None
+    channel_id: int = None
+    team_size: int = 5
+    opponent_id: int = None
+    opponent_team_id: int = None
+    created_at: str = None
+    matched_at: str = None
+    notes: str = None
+
+
+@dataclass(init=False)
+class ScrimConfigDTO(BaseDTO):
+    config_id: int = None
+    guild_id: int = None
+    scrim_channel_id: int = None
+    cooldown_minutes: int = 60
+    auto_expire_hours: int = 24
+    enabled: bool = True
+    settings: dict = None
+    created_at: str = None
+    updated_at: str = None

@@ -1,4 +1,5 @@
 from sqlalchemy import Column, Integer, String, Boolean, DateTime, func, BigInteger
+from sqlalchemy.orm import relationship
 from typing import Optional
 import sys
 import os
@@ -17,6 +18,10 @@ class Team(Base):
     active = Column(Boolean, default=True)
     team_captain_id = Column(BigInteger, default=None)
     team_role_id = Column(BigInteger, default=None)
+    
+    # Relationships with scrims
+    created_scrims = relationship('Scrim', foreign_keys='Scrim.creator_team_id', back_populates='creator_team')
+    joined_scrims = relationship('Scrim', foreign_keys='Scrim.opponent_team_id', back_populates='opponent_team')
     
     def __repr__(self):
         return f"<Team(team_id={self.team_id}, name={self.name})>"
